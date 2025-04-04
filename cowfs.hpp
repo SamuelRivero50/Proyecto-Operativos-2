@@ -60,8 +60,16 @@ struct Inode {
 // Main COW file system class
 class COWFileSystem {
 public:
+    // Constructor sin parámetros para crear un nuevo sistema de archivos
+    COWFileSystem();
+    
+    // Constructor con parámetros para cargar un sistema existente
     COWFileSystem(const std::string& disk_path, size_t disk_size);
+    
     ~COWFileSystem();
+
+    // Formatear el sistema de archivos
+    bool format();
 
     // Core file operations
     fd_t create(const std::string& filename);
@@ -108,6 +116,7 @@ private:
     std::string disk_path;
     size_t disk_size;
     size_t total_blocks;
+    bool is_formatted;
 
     void init_file_system();
 };
