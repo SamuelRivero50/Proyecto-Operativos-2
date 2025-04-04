@@ -9,8 +9,17 @@
 
 namespace cowfs {
 
+COWFileSystem::COWFileSystem() 
+    : disk_path(""), disk_size(1024 * 1024), is_formatted(false) {
+    total_blocks = disk_size / BLOCK_SIZE;
+    file_descriptors.resize(MAX_FILES);
+    inodes.resize(MAX_FILES);
+    blocks.resize(total_blocks);
+    init_file_system();
+}
+
 COWFileSystem::COWFileSystem(const std::string& disk_path, size_t disk_size)
-    : disk_path(disk_path), disk_size(disk_size) {
+    : disk_path(disk_path), disk_size(disk_size), is_formatted(false) {
     std::cout << "Initializing file system with size: " << disk_size << " bytes" << std::endl;
     
     total_blocks = disk_size / BLOCK_SIZE;
@@ -79,6 +88,42 @@ bool COWFileSystem::initialize_disk() {
         new_disk.write(reinterpret_cast<char*>(blocks.data()), blocks.size() * sizeof(Block));
         return true;
     }
+}
+
+bool COWFileSystem::format() {
+    if (is_formatted) {
+        std::cerr << "File system already formatted" << std::endl;
+        return false;
+    }
+
+    // Initialize all inodes as unused
+    for (auto& inode : inodes) {
+        inode.is_used = false;
+        inode.filename[0] = '\0';
+        inode.first_block = 0;
+        inode.size = 0;
+        inode.version_count = 0;
+        inode.version_history.clear();
+    }
+
+    // Initialize all blocks as unused
+    for (auto& block : blocks) {
+        block.is_used = false;
+        block.next_block = 0;
+        std::memset(block.data, 0, BLOCK_SIZE);
+    }
+
+    // Initialize all file descriptors
+    for (auto& fd : file_descriptors) {
+        fd.inode = nullptr;
+        fd.mode = FileMode::READ;
+        fd.current_position = 0;
+        fd.is_valid = false;
+    }
+
+    is_formatted = true;
+    std::cout << "File system formatted successfully" << std::endl;
+    return true;
 }
 
 fd_t COWFileSystem::create(const std::string& filename) {
@@ -271,15 +316,12 @@ ssize_t COWFileSystem::write(fd_t fd, const void* buffer, size_t size) {
             std::cerr << "Failed to allocate first block" << std::endl;
             return -1;
         }
-        std::cout << "Allocated first block: " << new_first_block << std::endl;
     } else {
         // Copy existing content for COW
         if (!copy_block(fd_entry.inode->first_block, new_first_block)) {
             std::cerr << "Failed to copy existing block" << std::endl;
             return -1;
         }
-        std::cout << "Copied existing block: " << fd_entry.inode->first_block 
-                  << " to " << new_first_block << std::endl;
     }
 
     // Write data at current position
@@ -297,7 +339,6 @@ ssize_t COWFileSystem::write(fd_t fd, const void* buffer, size_t size) {
             }
             blocks[current_block].next_block = next_block;
             current_block = next_block;
-            std::cout << "Allocated additional block: " << next_block << std::endl;
         }
 
         size_t bytes_to_write = std::min(size - bytes_written, BLOCK_SIZE - block_offset);
