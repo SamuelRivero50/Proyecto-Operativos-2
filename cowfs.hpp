@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <cstring>
+#include <chrono>
 
 namespace cowfs {
 
@@ -36,7 +37,12 @@ struct FileStatus {
 struct Block {
     uint8_t data[BLOCK_SIZE];
     size_t next_block;
-    bool is_used;
+    bool is_allocated;
+    // New fields for delta storage
+    bool is_delta;
+    size_t base_block;     // Reference to original block
+    size_t delta_start;    // Start position in base block
+    size_t delta_length;   // Length of content to use from base block
 };
 
 // Version history structure
@@ -57,18 +63,29 @@ struct Inode {
     std::vector<VersionInfo> version_history;  // Track version history
 };
 
+// File descriptor entry
+struct FileDescriptor {
+    Inode* inode;
+    FileMode mode;
+    size_t current_position;
+    bool is_valid;
+};
+
 // Main COW file system class
 class COWFileSystem {
 public:
     COWFileSystem(const std::string& disk_path, size_t disk_size);
     ~COWFileSystem();
 
+    // Static function to delete a disk file
+    static bool delete_disk(const std::string& disk_path);
+
     // Core file operations
     fd_t create(const std::string& filename);
-    fd_t open(const std::string& filename, FileMode mode);
+    fd_t open(const std::string& filename, FileMode mode) const;
     ssize_t read(fd_t fd, void* buffer, size_t size);
     ssize_t write(fd_t fd, const void* buffer, size_t size);
-    int close(fd_t fd);
+    int close(fd_t fd) const;
 
     // Version management
     size_t get_version_count(fd_t fd) const;
@@ -84,10 +101,14 @@ public:
     size_t get_total_memory_usage() const;
     void garbage_collect();
 
+    // Metadata operations
+    void print_metadata_json() const;
+    bool save_metadata_json(const std::string& version_label) const;
+
 private:
     // Internal helper functions
     bool initialize_disk();
-    Inode* find_inode(const std::string& filename);
+    const Inode* find_inode(const std::string& filename) const;
     fd_t allocate_file_descriptor();
     void free_file_descriptor(fd_t fd);
     bool allocate_block(size_t& block_index);
@@ -95,13 +116,6 @@ private:
     bool copy_block(size_t source_block, size_t& dest_block);
 
     // File descriptor management
-    struct FileDescriptor {
-        Inode* inode;
-        FileMode mode;
-        size_t current_position;
-        bool is_valid;
-    };
-
     std::vector<FileDescriptor> file_descriptors;
     std::vector<Inode> inodes;
     std::vector<Block> blocks;

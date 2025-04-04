@@ -1,21 +1,19 @@
 #include "cowfs.hpp"
-#include "cowfs_metadata.hpp"
+#include "cowfs_utils.hpp"
 #include <iostream>
 #include <string>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <fstream>
+#include <vector>
 
-void print_file_status(const cowfs::COWFileSystem& fs, cowfs::fd_t fd) {
-    auto status = fs.get_file_status(fd);
-    std::cout << "File status:\n"
-              << "  Is open: " << (status.is_open ? "Yes" : "No") << "\n"
-              << "  Is modified: " << (status.is_modified ? "Yes" : "No") << "\n"
-              << "  Current size: " << status.current_size << " bytes\n"
-              << "  Current version: " << status.current_version << "\n"
-              << "  Total memory usage: " << fs.get_total_memory_usage() << " bytes\n"
-              << std::endl;
+void print_file_status(const cowfs::FileStatus& status) {
+    std::cout << "File Status:" << std::endl;
+    std::cout << "  Is Open: " << (status.is_open ? "Yes" : "No") << std::endl;
+    std::cout << "  Is Modified: " << (status.is_modified ? "Yes" : "No") << std::endl;
+    std::cout << "  Current Size: " << status.current_size << " bytes" << std::endl;
+    std::cout << "  Current Version: " << status.current_version << std::endl;
 }
 
 void save_and_print_metadata_json(cowfs::COWFileSystem& fs, const std::string& version_label) {
@@ -85,87 +83,159 @@ void read_and_print_file(cowfs::COWFileSystem& fs, cowfs::fd_t fd) {
     }
     buffer[read] = '\0';
     std::cout << "Read from file: " << buffer << std::endl;
-    print_file_status(fs, fd);
+    print_file_status(fs.get_file_status(fd));
+}
+
+void print_file_content(cowfs::COWFileSystem& fs, const std::string& filename) {
+    cowfs::fd_t fd = fs.open(filename, cowfs::FileMode::READ);
+    if (fd < 0) {
+        std::cerr << "Failed to open file for reading" << std::endl;
+        return;
+    }
+
+    char buffer[4096];
+    ssize_t bytes_read;
+    std::cout << "File content: ";
+    while ((bytes_read = fs.read(fd, buffer, sizeof(buffer))) > 0) {
+        std::cout.write(buffer, bytes_read);
+    }
+    std::cout << std::endl;
+    fs.close(fd);
+}
+
+void print_version_info(cowfs::COWFileSystem& fs, const std::string& filename) {
+    cowfs::fd_t fd = fs.open(filename, cowfs::FileMode::READ);
+    if (fd < 0) {
+        std::cerr << "Failed to open file for reading" << std::endl;
+        return;
+    }
+
+    auto versions = fs.get_version_history(fd);
+    std::cout << "\nVersion history for " << filename << ":" << std::endl;
+    for (const auto& version : versions) {
+        std::cout << "Version " << version.version_number 
+                  << " (size: " << version.size 
+                  << ", timestamp: " << version.timestamp 
+                  << ", block: " << version.block_index << ")" << std::endl;
+    }
+    fs.close(fd);
+}
+
+void list_all_files(const cowfs::COWFileSystem& fs) {
+    std::vector<std::string> files;
+    if (fs.list_files(files)) {
+        std::cout << "\n=== Files in the system ===" << std::endl;
+        if (files.empty()) {
+            std::cout << "No files found in the system." << std::endl;
+        } else {
+            for (const auto& filename : files) {
+                std::cout << "\nFile: " << filename << std::endl;
+                
+                // Open file to get its details
+                cowfs::fd_t fd = fs.open(filename, cowfs::FileMode::READ);
+                if (fd >= 0) {
+                    // Get file status
+                    cowfs::FileStatus status = fs.get_file_status(fd);
+                    print_file_status(status);
+                    
+                    // Get version history
+                    auto versions = fs.get_version_history(fd);
+                    std::cout << "Version History:" << std::endl;
+                    for (const auto& version : versions) {
+                        std::cout << "  Version " << version.version_number 
+                                << " (Size: " << version.size 
+                                << " bytes, Block: " << version.block_index 
+                                << ", Time: " << version.timestamp << ")" << std::endl;
+                    }
+                    
+                    // Close the file
+                    fs.close(fd);
+                }
+            }
+        }
+        std::cout << "\nTotal Memory Usage: " << fs.get_total_memory_usage() << " bytes" << std::endl;
+    }
 }
 
 int main() {
-    try {
-        // Create a COW file system with 1MB of space
-        cowfs::COWFileSystem fs("cowfs.disk", 1024 * 1024);
+    // Delete existing disk files if they exist
+    if (cowfs::COWFileSystem::delete_disk("disk.bin")) {
+        std::cout << "Deleted existing disk.bin" << std::endl;
+    }
+    if (cowfs::COWFileSystem::delete_disk("cowfs.disk")) {
+        std::cout << "Deleted existing cowfs.disk" << std::endl;
+    }
 
-        // Try to open the file first, if it exists
-        std::cout << "Trying to open 'test.txt'..." << std::endl;
-        cowfs::fd_t fd = fs.open("test.txt", cowfs::FileMode::WRITE);
-        
-        // If file doesn't exist, create it
-        if (fd < 0) {
-            std::cout << "File doesn't exist, creating 'test.txt'..." << std::endl;
-            fd = fs.create("test.txt");
-            if (fd < 0) {
-                std::cerr << "Failed to create file" << std::endl;
-                return 1;
-            }
-        }
+    // Create a new file system
+    cowfs::COWFileSystem fs("disk.bin", 1024 * 1024); // 1MB disk
 
-        // Write first version
-        std::cout << "\nWriting first version..." << std::endl;
-        const char* data1 = "Hello, COW File System!";
-        ssize_t written = fs.write(fd, data1, strlen(data1));
-        if (written < 0) {
-            std::cerr << "Failed to write to file" << std::endl;
-            return 1;
-        }
-        std::cout << "Wrote " << written << " bytes to file" << std::endl;
-        print_file_status(fs, fd);
-        cowfs::MetadataManager::save_and_print_metadata(fs, "v1");
-
-        // Close the file
-        fs.close(fd);
-
-        // Reopen and read first version
-        std::cout << "\nReading first version..." << std::endl;
-        fd = fs.open("test.txt", cowfs::FileMode::READ);
-        if (fd < 0) {
-            std::cerr << "Failed to open file" << std::endl;
-            return 1;
-        }
-        read_and_print_file(fs, fd);
-        fs.close(fd);
-
-        // Open in write mode and append more content
-        std::cout << "\nWriting second version..." << std::endl;
-        fd = fs.open("test.txt", cowfs::FileMode::WRITE);
-        if (fd < 0) {
-            std::cerr << "Failed to open file" << std::endl;
-            return 1;
-        }
-        const char* data2 = " This is the second version!";
-        written = fs.write(fd, data2, strlen(data2));
-        if (written < 0) {
-            std::cerr << "Failed to write to file" << std::endl;
-            return 1;
-        }
-        std::cout << "Wrote " << written << " bytes to file" << std::endl;
-        print_file_status(fs, fd);
-        cowfs::MetadataManager::save_and_print_metadata(fs, "v2");
-        fs.close(fd);
-
-        // Read the latest version
-        std::cout << "\nReading latest version..." << std::endl;
-        fd = fs.open("test.txt", cowfs::FileMode::READ);
-        if (fd < 0) {
-            std::cerr << "Failed to open file" << std::endl;
-            return 1;
-        }
-        read_and_print_file(fs, fd);
-        fs.close(fd);
-
-        // Show final metadata
-        cowfs::MetadataManager::save_and_print_metadata(fs, "final");
-
-        return 0;
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+    // Create a new file
+    cowfs::fd_t fd = fs.create("test.txt");
+    if (fd == -1) {
+        std::cerr << "Failed to create file" << std::endl;
         return 1;
     }
+
+    // Write some content
+    const char* content = "Hello, World!";
+    if (fs.write(fd, content, strlen(content)) == -1) {
+        std::cerr << "Failed to write to file" << std::endl;
+        return 1;
+    }
+
+    // Close the file
+    fs.close(fd);
+
+    // List all files
+    std::vector<std::string> files;
+    fs.list_files(files);
+    std::cout << "\nFiles in the system:" << std::endl;
+    for (const auto& file : files) {
+        std::cout << "- " << file << std::endl;
+    }
+
+    // Open the file for reading
+    fd = fs.open("test.txt", cowfs::FileMode::READ);
+    if (fd == -1) {
+        std::cerr << "Failed to open file for reading" << std::endl;
+        return 1;
+    }
+
+    // Read and print content
+    char buffer[256];
+    ssize_t bytes_read = fs.read(fd, buffer, sizeof(buffer) - 1);
+    if (bytes_read > 0) {
+        buffer[bytes_read] = '\0';
+        std::cout << "\nFile content: " << buffer << std::endl;
+    }
+
+    // Close the file
+    fs.close(fd);
+
+    // Open the file for writing to append content
+    fd = fs.open("test.txt", cowfs::FileMode::WRITE);
+    if (fd == -1) {
+        std::cerr << "Failed to open file for writing" << std::endl;
+        return 1;
+    }
+
+    // Append new content
+    const char* new_content = "\nThis is a new version!";
+    if (fs.write(fd, new_content, strlen(new_content)) == -1) {
+        std::cerr << "Failed to append to file" << std::endl;
+        return 1;
+    }
+
+    // Close the file
+    fs.close(fd);
+
+    // List files again to show changes
+    files.clear();
+    fs.list_files(files);
+    std::cout << "\nFiles in the system after append:" << std::endl;
+    for (const auto& file : files) {
+        std::cout << "- " << file << std::endl;
+    }
+
+    return 0;
 } 
