@@ -3,25 +3,26 @@
 
 #include "cowfs.hpp"
 #include <string>
+#include <vector>
 
 namespace cowfs {
 
-class MetadataManager {
-public:
-    // Save metadata to a JSON file and print to console
-    static bool save_and_print_metadata(COWFileSystem& fs, const std::string& version_label);
-    
-    // Only print metadata to console
-    static void print_metadata(COWFileSystem& fs);
-    
-    // Only save metadata to file
-    static bool save_metadata(COWFileSystem& fs, const std::string& version_label);
+    class MetadataManager {
+    public:
+        static bool save_metadata_files(COWFileSystem& fs, const std::string& output_dir,
+                                      const std::string& version_label);
+        static bool save_and_print_metadata(COWFileSystem& fs, const std::string& version_label);
+        static void print_metadata(COWFileSystem& fs);
+        static bool save_metadata(COWFileSystem& fs, const std::string& version_label);
 
-private:
-    // Helper function to generate JSON string
-    static std::string generate_metadata_json(COWFileSystem& fs);
-};
+    private:
+        static std::string generate_file_json(const std::string& filename, COWFileSystem& fs);
+        static std::string generate_metadata_json(COWFileSystem& fs);
+        static bool create_directory(const std::string& path);
+        static bool directory_exists(const std::string& path);
+        static std::string build_path(const std::string& dir, const std::string& filename);
+    };
 
 } // namespace cowfs
 
-#endif // COWFS_METADATA_HPP 
+#endif // COWFS_METADATA_HPP
