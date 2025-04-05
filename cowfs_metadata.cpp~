@@ -1,0 +1,209 @@
+#include "cowfs_metadata.hpp"
+#include <iostream>
+#include <fstream>
+#include <iomanip>
+#include <stdexcept>
+
+namespace cowfs {
+
+// Implementación de JsonBuilder (solo las funciones no template)
+JsonBuilder& JsonBuilder::startObject(const std::string& name) {
+    if (!name.empty()) {
+        if (!first_item) ss << ",\n";
+        indent();
+        ss << "\"" << name << "\": ";
+    }
+    ss << "{\n";
+    indent_level++;
+    first_item = true;
+    return *this;
+}
+
+JsonBuilder& JsonBuilder::endObject() {
+    indent_level--;
+    ss << "\n";
+    indent();
+    ss << "}";
+    first_item = false;
+    return *this;
+}
+
+JsonBuilder& JsonBuilder::startArray(const std::string& name) {
+    if (!first_item) ss << ",\n";
+    indent();
+    ss << "\"" << name << "\": [\n";
+    indent_level++;
+    first_item = true;
+    return *this;
+}
+
+JsonBuilder& JsonBuilder::endArray() {
+    indent_level--;
+    ss << "\n";
+    indent();
+    ss << "]";
+    first_item = false;
+    return *this;
+}
+
+// Implementación de MetadataManager
+std::string MetadataManager::generate_pretty_metadata_json(COWFileSystem& fs) {
+    JsonBuilder json;
+
+    json.startObject()
+        .startObject("filesystem")
+            .addProperty("total_memory_usage", fs.get_total_memory_usage())
+            .startArray("files");
+
+    std::vector<std::string> files;
+    fs.list_files(files);
+
+    for (size_t i = 0; i < files.size(); ++i) {
+        const auto& filename = files[i];
+        fd_t fd = fs.open(filename, FileMode::READ);
+        if (fd >= 0) {
+            auto status = fs.get_file_status(fd);
+
+            JsonBuilder fileJson;
+            fileJson.startObject()
+                .addProperty("name", filename)
+                .addProperty("size", status.current_size)
+                .addProperty("version_count", status.current_version)
+                .addProperty("is_open", status.is_open ? "true" : "false")
+                .startArray("version_history");
+
+            auto version_history = fs.get_version_history(fd);
+            for (const auto& version : version_history) {
+                JsonBuilder versionJson;
+                versionJson.startObject()
+                    .addProperty("version_number", version.version_number)
+                    .addProperty("block_index", version.block_index)
+                    .addProperty("size", version.size)
+                    .addProperty("timestamp", version.timestamp)
+                    .endObject();
+
+                fileJson.addArrayItem(versionJson.build());
+            }
+
+            fileJson.endArray().endObject();
+            json.addArrayItem(fileJson.build());
+
+            fs.close(fd);
+        }
+    }
+
+    json.endArray()  // end files array
+        .endObject() // end filesystem object
+        .endObject(); // end root object
+
+    return json.build();
+}
+
+std::string MetadataManager::generate_compact_metadata_json(COWFileSystem& fs) {
+    JsonBuilder json;
+
+    json.startObject()
+        .startObject("filesystem")
+            .addProperty("total_memory_usage", fs.get_total_memory_usage())
+            .startArray("files");
+
+    std::vector<std::string> files;
+    fs.list_files(files);
+
+    for (const auto& filename : files) {
+        fd_t fd = fs.open(filename, FileMode::READ);
+        if (fd >= 0) {
+            auto status = fs.get_file_status(fd);
+
+            JsonBuilder fileJson;
+            fileJson.startObject()
+                .addProperty("name", filename)
+                .addProperty("size", status.current_size)
+                .addProperty("version_count", status.current_version)
+                .addProperty("is_open", status.is_open ? "true" : "false")
+                .startArray("version_history");
+
+            auto version_history = fs.get_version_history(fd);
+            for (const auto& version : version_history) {
+                JsonBuilder versionJson;
+                versionJson.startObject()
+                    .addProperty("version_number", version.version_number)
+                    .addProperty("block_index", version.block_index)
+                    .addProperty("size", version.size)
+                    .addProperty("timestamp", version.timestamp)
+                    .endObject();
+
+                fileJson.addArrayItem(versionJson.build());
+            }
+
+            fileJson.endArray().endObject();
+            json.addArrayItem(fileJson.build());
+
+            fs.close(fd);
+        }
+    }
+
+    json.endArray().endObject().endObject();
+
+    return json.build();
+}
+
+std::string MetadataManager::generate_metadata_json(COWFileSystem& fs, bool pretty) {
+    return pretty ? generate_pretty_metadata_json(fs) : generate_compact_metadata_json(fs);
+}
+
+bool MetadataManager::save_and_print_metadata(COWFileSystem& fs, const std::string& version_label) {
+    try {
+        std::string json_str = generate_metadata_json(fs);
+
+        // Print to console
+        std::cout << "\nFile System Metadata (JSON format):\n" << json_str << std::endl;
+
+        // Save to file
+        std::string filename = "metadata_" + version_label + ".json";
+        std::ofstream outfile(filename);
+        if (!outfile) {
+            throw std::runtime_error("Failed to open file for writing: " + filename);
+        }
+
+        outfile << generate_metadata_json(fs, false);
+        if (!outfile) {
+            throw std::runtime_error("Failed to write data to file: " + filename);
+        }
+
+        outfile.close();
+        std::cout << "Metadata saved to " << filename << std::endl;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+void MetadataManager::print_metadata(COWFileSystem& fs) {
+    std::cout << "\nFile System Metadata (JSON format):\n"
+              << generate_metadata_json(fs) << std::endl;
+}
+
+bool MetadataManager::save_metadata(COWFileSystem& fs, const std::string& version_label) {
+    try {
+        std::string filename = "metadata_" + version_label + ".json";
+        std::ofstream outfile(filename);
+        if (!outfile) {
+            throw std::runtime_error("Failed to open file for writing: " + filename);
+        }
+
+        outfile << generate_metadata_json(fs, false);
+        if (!outfile) {
+            throw std::runtime_error("Failed to write data to file: " + filename);
+        }
+
+        outfile.close();
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error saving metadata: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+} // namespace cowfs

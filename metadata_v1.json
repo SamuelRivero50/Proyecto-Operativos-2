@@ -1,0 +1,33 @@
+{
+  "filesystem": {
+    "total_memory_usage": 8192,
+    "files": [
+      {
+        "name": "test.txt",
+        "size": 25,
+        "version_count": 3,
+        "is_open": true,
+        "version_history": [
+          {
+            "version_number": 0,
+            "block_index": 0,
+            "size": 0,
+            "timestamp": "2025-04-05 14:42:53"
+          },
+          {
+            "version_number": 0,
+            "block_index": 0,
+            "size": 0,
+            "timestamp": "2025-04-05 14:42:53"
+          },
+          {
+            "version_number": 3,
+            "block_index": 0,
+            "size": 25,
+            "timestamp": "2025-04-05 14:42:53"
+          }
+        ]
+      }
+    ]
+  }
+}
