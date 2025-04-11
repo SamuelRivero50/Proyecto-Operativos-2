@@ -37,7 +37,6 @@ struct Block {
     uint8_t data[BLOCK_SIZE];
     size_t next_block;
     bool is_used;
-    size_t ref_count;       // Contador de referencias para bloques compartidos
 };
 
 // Version history structure
@@ -46,9 +45,6 @@ struct VersionInfo {
     size_t block_index;
     size_t size;
     std::string timestamp;
-    size_t delta_start;      // Índice donde comienzan los cambios
-    size_t delta_size;       // Tamaño de los cambios
-    size_t prev_version;     // Referencia a la versión anterior
 };
 
 // Inode structure
@@ -58,15 +54,7 @@ struct Inode {
     size_t size;
     size_t version_count;
     bool is_used;
-    std::vector<VersionInfo> version_history;
-    std::vector<size_t> shared_blocks;  // Bloques compartidos entre versiones
-};
-
-// Estructura para manejar bloques libres
-struct FreeBlockInfo {
-    size_t start_block;
-    size_t block_count;
-    FreeBlockInfo* next;
+    std::vector<VersionInfo> version_history;  // Track version history
 };
 
 // Main COW file system class
@@ -121,26 +109,7 @@ private:
     size_t disk_size;
     size_t total_blocks;
 
-    // Lista enlazada de bloques libres
-    FreeBlockInfo* free_blocks_list;
-    
-    // Nuevos métodos privados para gestión de memoria
-    bool merge_free_blocks();
-    bool split_free_block(FreeBlockInfo* block, size_t size_needed);
-    void add_to_free_list(size_t start, size_t count);
-    FreeBlockInfo* find_best_fit(size_t blocks_needed);
-
     void init_file_system();
-
-    // Nuevos métodos para manejo de versiones incrementales
-    bool find_delta(const void* old_data, const void* new_data, 
-                   size_t old_size, size_t new_size,
-                   size_t& delta_start, size_t& delta_size);
-    bool write_delta_blocks(const void* buffer, size_t size, 
-                          size_t delta_start, size_t& first_block);
-    bool read_version_data(size_t version, fd_t fd, void* buffer, size_t& size);
-    void increment_block_refs(size_t block_index);
-    void decrement_block_refs(size_t block_index);
 };
 
 } // namespace cowfs

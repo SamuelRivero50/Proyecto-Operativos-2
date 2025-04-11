@@ -10,7 +10,7 @@
 namespace cowfs {
 
 COWFileSystem::COWFileSystem(const std::string& disk_path, size_t disk_size)
-    : disk_path(disk_path), disk_size(disk_size), free_blocks_list(nullptr) {
+    : disk_path(disk_path), disk_size(disk_size) {
     std::cout << "Initializing file system with size: " << disk_size << " bytes" << std::endl;
     
     total_blocks = disk_size / BLOCK_SIZE;
@@ -28,22 +28,12 @@ COWFileSystem::COWFileSystem(const std::string& disk_path, size_t disk_size)
               << "  Max files: " << MAX_FILES << std::endl
               << "  Block size: " << BLOCK_SIZE << " bytes" << std::endl;
 
-    // Inicializar la lista de bloques libres con todo el espacio disponible
-    add_to_free_list(0, total_blocks);
-
     if (!initialize_disk()) {
         throw std::runtime_error("Failed to initialize disk");
     }
 }
 
 COWFileSystem::~COWFileSystem() {
-    // Limpiar la lista de bloques libres
-    while (free_blocks_list) {
-        FreeBlockInfo* temp = free_blocks_list;
-        free_blocks_list = free_blocks_list->next;
-        delete temp;
-    }
-
     // Save current state to disk
     std::ofstream disk(disk_path, std::ios::binary);
     if (disk.is_open()) {
@@ -214,225 +204,98 @@ std::string get_current_timestamp() {
     return ss.str();
 }
 
-bool COWFileSystem::find_delta(const void* old_data, const void* new_data,
-                             size_t old_size, size_t new_size,
-                             size_t& delta_start, size_t& delta_size) {
-    const uint8_t* old_bytes = static_cast<const uint8_t*>(old_data);
-    const uint8_t* new_bytes = static_cast<const uint8_t*>(new_data);
-    
-    // Si los datos son idénticos, no hay delta
-    if (old_size == new_size && std::memcmp(old_data, new_data, old_size) == 0) {
-        delta_start = 0;
-        delta_size = 0;
-        return true;
-    }
-    
-    // Encontrar dónde comienzan las diferencias
-    delta_start = 0;
-    while (delta_start < old_size && delta_start < new_size &&
-           old_bytes[delta_start] == new_bytes[delta_start]) {
-        delta_start++;
-    }
-    
-    // Si el nuevo contenido es más corto y no hay diferencias hasta aquí
-    if (delta_start == new_size && new_size < old_size) {
-        delta_size = 0;
-        return true;
-    }
-    
-    // Si el nuevo contenido es más largo pero igual hasta el final del viejo
-    if (delta_start == old_size && new_size > old_size) {
-        delta_size = new_size - old_size;
-        return true;
-    }
-    
-    // Encontrar dónde terminan las diferencias desde el final
-    size_t common_suffix = 0;
-    while (common_suffix < (old_size - delta_start) && 
-           common_suffix < (new_size - delta_start) &&
-           old_bytes[old_size - 1 - common_suffix] == new_bytes[new_size - 1 - common_suffix]) {
-        common_suffix++;
-    }
-    
-    // Calcular el tamaño del delta
-    delta_size = (new_size - delta_start) - common_suffix;
-    
-    // Validación final
-    if (delta_start + delta_size > new_size) {
-        delta_size = new_size - delta_start;
-    }
-    
-    return true;
-}
-
-bool COWFileSystem::write_delta_blocks(const void* buffer, size_t size,
-                                     size_t delta_start, size_t& first_block) {
-    if (size == 0 || delta_start >= size) {
-        first_block = 0;
-        return true;
-    }
-    
-    // Calcular cuántos bloques necesitamos
-    size_t actual_size = std::min(size - delta_start, size);
-    size_t blocks_needed = (actual_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    first_block = 0;
-    size_t current_block = 0;
-    size_t prev_block = 0;
-    
-    const uint8_t* data = static_cast<const uint8_t*>(buffer) + delta_start;
-    size_t remaining = actual_size;
-    
-    while (remaining > 0) {
-        if (!allocate_block(current_block)) {
-            // Liberar bloques si falla
-            if (first_block != 0) {
-                size_t block = first_block;
-                while (block != 0) {
-                    size_t next = blocks[block].next_block;
-                    free_block(block);
-                    block = next;
-                }
-            }
-            return false;
-        }
-        
-        if (first_block == 0) {
-            first_block = current_block;
-        } else {
-            blocks[prev_block].next_block = current_block;
-        }
-        
-        size_t bytes_to_write = std::min(remaining, BLOCK_SIZE);
-        std::memcpy(blocks[current_block].data, data, bytes_to_write);
-        
-        // Inicializar el resto del bloque con ceros si es necesario
-        if (bytes_to_write < BLOCK_SIZE) {
-            std::memset(blocks[current_block].data + bytes_to_write, 0, BLOCK_SIZE - bytes_to_write);
-        }
-        
-        data += bytes_to_write;
-        remaining -= bytes_to_write;
-        prev_block = current_block;
-    }
-    
-    // Asegurar que el último bloque tenga next_block = 0
-    if (prev_block < blocks.size()) {
-        blocks[prev_block].next_block = 0;
-    }
-    
-    return true;
-}
-
-void COWFileSystem::increment_block_refs(size_t block_index) {
-    while (block_index != 0 && block_index < blocks.size()) {
-        blocks[block_index].ref_count++;
-        block_index = blocks[block_index].next_block;
-    }
-}
-
-void COWFileSystem::decrement_block_refs(size_t block_index) {
-    while (block_index != 0 && block_index < blocks.size()) {
-        if (blocks[block_index].ref_count > 0) {
-            blocks[block_index].ref_count--;
-            if (blocks[block_index].ref_count == 0) {
-                size_t next_block = blocks[block_index].next_block;
-                free_block(block_index);
-                block_index = next_block;
-            } else {
-                break; // Si aún hay referencias, no seguir
-            }
-        }
-        block_index = blocks[block_index].next_block;
-    }
-}
-
 ssize_t COWFileSystem::write(fd_t fd, const void* buffer, size_t size) {
     std::cout << "Starting write operation for fd: " << fd << std::endl;
-    
+
     if (fd < 0 || fd >= static_cast<fd_t>(file_descriptors.size()) || 
         !file_descriptors[fd].is_valid) {
         std::cerr << "Invalid file descriptor in write" << std::endl;
         return -1;
     }
-    
+
     auto& fd_entry = file_descriptors[fd];
     if (fd_entry.mode != FileMode::WRITE) {
         std::cerr << "File not opened for writing" << std::endl;
         return -1;
     }
-    
+
     if (!fd_entry.inode) {
         std::cerr << "No inode associated with file descriptor" << std::endl;
         return -1;
     }
-    
-    // Obtener datos de la versión anterior si existe
-    std::vector<uint8_t> old_data;
-    size_t old_size = 0;
-    
-    if (fd_entry.inode->version_count > 0) {
-        const auto& last_version = fd_entry.inode->version_history.back();
-        old_size = last_version.size;
-        old_data.resize(old_size);
-        
-        size_t current_block = last_version.block_index;
-        size_t pos = 0;
-        
-        while (current_block != 0 && pos < old_size) {
-            size_t bytes_to_read = std::min(old_size - pos, BLOCK_SIZE);
-            std::memcpy(old_data.data() + pos, blocks[current_block].data, bytes_to_read);
-            pos += bytes_to_read;
-            current_block = blocks[current_block].next_block;
-        }
-    }
-    
-    // Encontrar el delta
-    size_t delta_start = 0;
-    size_t delta_size = size;
-    
-    if (!old_data.empty()) {
-        find_delta(old_data.data(), buffer, old_size, size, delta_start, delta_size);
-    }
-    
-    // Escribir solo los bloques que contienen cambios
-    size_t new_first_block = 0;
-    if (delta_size > 0) {
-        if (!write_delta_blocks(buffer, delta_size, delta_start, new_first_block)) {
-            std::cerr << "Failed to write delta blocks" << std::endl;
+
+    std::cout << "Current file state before write:"
+              << "\n  inode first_block: " << fd_entry.inode->first_block
+              << "\n  inode size: " << fd_entry.inode->size
+              << "\n  inode version_count: " << fd_entry.inode->version_count
+              << "\n  current_position: " << fd_entry.current_position
+              << std::endl;
+
+    // Allocate first block if needed
+    size_t new_first_block;
+    if (fd_entry.inode->first_block == 0) {
+        if (!allocate_block(new_first_block)) {
+            std::cerr << "Failed to allocate first block" << std::endl;
             return -1;
         }
+        std::cout << "Allocated first block: " << new_first_block << std::endl;
+    } else {
+        if (!copy_block(fd_entry.inode->first_block, new_first_block)) {
+            std::cerr << "Failed to copy existing block" << std::endl;
+            return -1;
+        }
+        std::cout << "Copied existing block: " << fd_entry.inode->first_block 
+                  << " to " << new_first_block << std::endl;
     }
-    
-    // Crear nueva versión
+
+    // Write data
+    size_t bytes_written = 0;
+    size_t current_block = new_first_block;
+    size_t block_offset = fd_entry.current_position % BLOCK_SIZE;
+
+    while (bytes_written < size) {
+        if (block_offset == 0 && bytes_written > 0) {
+            size_t next_block;
+            if (!allocate_block(next_block)) {
+                std::cerr << "Failed to allocate next block" << std::endl;
+                free_block(new_first_block);
+                return -1;
+            }
+            blocks[current_block].next_block = next_block;
+            current_block = next_block;
+            std::cout << "Allocated additional block: " << next_block << std::endl;
+        }
+
+        size_t bytes_to_write = std::min(size - bytes_written, BLOCK_SIZE - block_offset);
+        std::memcpy(blocks[current_block].data + block_offset,
+                   static_cast<const uint8_t*>(buffer) + bytes_written,
+                   bytes_to_write);
+
+        bytes_written += bytes_to_write;
+        block_offset = (block_offset + bytes_to_write) % BLOCK_SIZE;
+    }
+
+    // Update version info
     VersionInfo new_version;
     new_version.version_number = fd_entry.inode->version_count + 1;
     new_version.block_index = new_first_block;
-    new_version.size = size;
+    new_version.size = fd_entry.current_position + bytes_written;
     new_version.timestamp = get_current_timestamp();
-    new_version.delta_start = delta_start;
-    new_version.delta_size = delta_size;
-    new_version.prev_version = fd_entry.inode->version_count > 0 ? 
-                              fd_entry.inode->version_count : 0;
     
-    // Incrementar referencias a bloques compartidos
-    if (fd_entry.inode->version_count > 0) {
-        increment_block_refs(fd_entry.inode->first_block);
-    }
-    
-    // Actualizar inode
+    // Update inode
     fd_entry.inode->version_history.push_back(new_version);
     fd_entry.inode->first_block = new_first_block;
-    fd_entry.inode->size = size;
+    fd_entry.inode->size = fd_entry.current_position + bytes_written;
     fd_entry.inode->version_count++;
-    
+    fd_entry.current_position += bytes_written;
+
     std::cout << "Write operation completed:"
-              << "\n  bytes written: " << size
-              << "\n  delta size: " << delta_size
+              << "\n  bytes written: " << bytes_written
               << "\n  new version: " << fd_entry.inode->version_count
               << "\n  new size: " << fd_entry.inode->size
               << std::endl;
-    
-    return size;
+
+    return bytes_written;
 }
 
 int COWFileSystem::close(fd_t fd) {
@@ -478,35 +341,14 @@ void COWFileSystem::free_file_descriptor(fd_t fd) {
 }
 
 bool COWFileSystem::allocate_block(size_t& block_index) {
-    // Buscar el mejor bloque libre que se ajuste
-    FreeBlockInfo* best_block = find_best_fit(1);
-    
-    if (best_block) {
-        block_index = best_block->start_block;
-        
-        // Actualizar la lista de bloques libres
-        if (best_block->block_count > 1) {
-            best_block->start_block++;
-            best_block->block_count--;
-        } else {
-            if (best_block == free_blocks_list) {
-                free_blocks_list = best_block->next;
-            } else {
-                FreeBlockInfo* current = free_blocks_list;
-                while (current->next != best_block) {
-                    current = current->next;
-                }
-                current->next = best_block->next;
-            }
-            delete best_block;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        if (!blocks[i].is_used) {
+            blocks[i].is_used = true;
+            blocks[i].next_block = 0;
+            block_index = i;
+            return true;
         }
-        
-        // Inicializar el bloque
-        blocks[block_index].is_used = true;
-        blocks[block_index].next_block = 0;
-        return true;
     }
-    
     return false;
 }
 
@@ -596,46 +438,15 @@ size_t COWFileSystem::get_total_memory_usage() const {
 }
 
 void COWFileSystem::garbage_collect() {
-    std::vector<bool> block_used(blocks.size(), false);
-    
-    // Marcar bloques en uso
-    for (const auto& inode : inodes) {
-        if (inode.is_used) {
-            for (const auto& version : inode.version_history) {
-                size_t current_block = version.block_index;
-                while (current_block != 0 && current_block < blocks.size()) {
-                    if (blocks[current_block].ref_count > 0) {
-                        block_used[current_block] = true;
-                    }
-                    current_block = blocks[current_block].next_block;
-                }
-            }
+    // This is a simplified version. In a real implementation, you would need to
+    // track block references and free unreachable blocks.
+    // For now, we'll just free blocks that are marked as unused.
+    for (auto& block : blocks) {
+        if (!block.is_used) {
+            block.next_block = 0;
+            std::memset(block.data, 0, BLOCK_SIZE);
         }
     }
-    
-    // Encontrar bloques libres contiguos
-    size_t start = 0;
-    while (start < blocks.size()) {
-        if (!block_used[start]) {
-            size_t count = 0;
-            while (start + count < blocks.size() && !block_used[start + count]) {
-                blocks[start + count].is_used = false;
-                blocks[start + count].next_block = 0;
-                blocks[start + count].ref_count = 0;
-                std::memset(blocks[start + count].data, 0, BLOCK_SIZE);
-                count++;
-            }
-            
-            if (count > 0) {
-                add_to_free_list(start, count);
-            }
-            
-            start += count;
-        }
-        start++;
-    }
-    
-    merge_free_blocks();
 }
 
 void COWFileSystem::init_file_system() {
@@ -655,94 +466,14 @@ void COWFileSystem::init_file_system() {
         inode.size = 0;
         inode.version_count = 0;
         inode.version_history.clear();
-        inode.shared_blocks.clear();
     }
 
     // Initialize all blocks
     for (auto& block : blocks) {
         block.is_used = false;
         block.next_block = 0;
-        block.ref_count = 0;
         std::memset(block.data, 0, BLOCK_SIZE);
     }
-}
-
-bool COWFileSystem::merge_free_blocks() {
-    if (!free_blocks_list) return false;
-    
-    bool merged = false;
-    FreeBlockInfo* current = free_blocks_list;
-    
-    while (current && current->next) {
-        if (current->start_block + current->block_count == current->next->start_block) {
-            // Fusionar bloques contiguos
-            current->block_count += current->next->block_count;
-            FreeBlockInfo* temp = current->next;
-            current->next = current->next->next;
-            delete temp;
-            merged = true;
-        } else {
-            current = current->next;
-        }
-    }
-    
-    return merged;
-}
-
-bool COWFileSystem::split_free_block(FreeBlockInfo* block, size_t size_needed) {
-    if (!block || block->block_count < size_needed) return false;
-    
-    if (block->block_count > size_needed) {
-        // Crear nuevo bloque con el espacio restante
-        FreeBlockInfo* new_block = new FreeBlockInfo{
-            block->start_block + size_needed,
-            block->block_count - size_needed,
-            block->next
-        };
-        
-        block->block_count = size_needed;
-        block->next = new_block;
-    }
-    
-    return true;
-}
-
-void COWFileSystem::add_to_free_list(size_t start, size_t count) {
-    FreeBlockInfo* new_block = new FreeBlockInfo{start, count, nullptr};
-    
-    if (!free_blocks_list || start < free_blocks_list->start_block) {
-        new_block->next = free_blocks_list;
-        free_blocks_list = new_block;
-    } else {
-        FreeBlockInfo* current = free_blocks_list;
-        while (current->next && current->next->start_block < start) {
-            current = current->next;
-        }
-        new_block->next = current->next;
-        current->next = new_block;
-    }
-    
-    merge_free_blocks();
-}
-
-FreeBlockInfo* COWFileSystem::find_best_fit(size_t blocks_needed) {
-    FreeBlockInfo* best_fit = nullptr;
-    FreeBlockInfo* current = free_blocks_list;
-    size_t smallest_difference = SIZE_MAX;
-    
-    while (current) {
-        if (current->block_count >= blocks_needed) {
-            size_t difference = current->block_count - blocks_needed;
-            if (difference < smallest_difference) {
-                smallest_difference = difference;
-                best_fit = current;
-                if (difference == 0) break; // Encontramos un ajuste perfecto
-            }
-        }
-        current = current->next;
-    }
-    
-    return best_fit;
 }
 
 } // namespace cowfs 
