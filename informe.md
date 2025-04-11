@@ -36,12 +36,6 @@ Se implementó el principio COW de forma que las modificaciones a los archivos n
 
 ## Hallazgos y Resultados
 
-### Eficiencia en el Uso de Memoria
-
-La implementación ha demostrado una reducción significativa en el uso de memoria comparada con sistemas que almacenan copias completas de cada versión:
-
-- Al almacenar solo las diferencias entre versiones, se observó un ahorro de espacio de hasta un 80% en archivos con modificaciones incrementales.
-- El sistema de contadores de referencia permite compartir eficientemente bloques no modificados entre múltiples versiones.
 
 ### Rendimiento
 
@@ -64,36 +58,18 @@ Durante el desarrollo del proyecto se identificaron las siguientes limitaciones:
 2. **Complejidad de Implementación**: La gestión de referencias y detección de deltas aumenta la complejidad del código.
 3. **Escalabilidad**: El sistema está diseñado para un número limitado de archivos y un tamaño máximo de disco.
 4. **Concurrencia**: No se han implementado mecanismos avanzados para escrituras concurrentes.
+5. **Bloques**: El programa esta diseñado para archivos unicamente de 4096 bits, por lo que si hay un archivo de más bits se dificulta su versionado.
 
-## Aplicaciones Prácticas
-
-El sistema desarrollado tiene diversas aplicaciones prácticas:
-
-1. **Sistemas de Control de Versiones**: Base para implementar sistemas como Git a nivel de sistema de archivos.
-2. **Respaldos Incrementales**: Permite realizar copias de seguridad que solo almacenan cambios.
-3. **Snapshots de Sistema**: Facilita la creación de instantáneas del estado del sistema en momentos específicos.
-4. **Entornos de Desarrollo**: Proporciona un historial automático de cambios en archivos de código.
 
 ## Conclusiones
 
 El proyecto ha cumplido satisfactoriamente sus objetivos, implementando un sistema de archivos COW funcional que:
 
 1. **Preserva la Historia**: Mantiene automáticamente un historial completo de versiones.
-2. **Optimiza Recursos**: Utiliza técnicas avanzadas para minimizar el uso de memoria.
-3. **Ofrece Flexibilidad**: Permite revertir a cualquier versión anterior.
-4. **Garantiza Integridad**: Asegura que los datos nunca sean sobrescritos o corrompidos.
+2. **Ofrece Flexibilidad**: Permite revertir a cualquier versión anterior.
+3. **Garantiza Integridad**: Asegura que los datos nunca sean sobrescritos o corrompidos.
 
 La biblioteca COWFS demuestra la aplicabilidad práctica de los conceptos de virtualización de memoria y sistemas de archivos en la creación de herramientas de gestión de datos eficientes y robustas.
-
-## Trabajo Futuro
-
-Para continuar el desarrollo de este proyecto, se sugieren las siguientes líneas de trabajo:
-
-1. **Compresión de Datos**: Implementar algoritmos de compresión para reducir aún más el uso de memoria.
-2. **Mecanismos de Concurrencia**: Mejorar el soporte para acceso concurrente a archivos.
-3. **Persistencia Distribuida**: Extender el sistema para soportar almacenamiento distribuido.
-4. **Interfaz Gráfica**: Desarrollar una interfaz que permita visualizar y gestionar versiones.
-5. **Optimización de Rendimiento**: Mejorar algoritmos críticos para reducir la sobrecarga en operaciones de escritura.
 
 ## Aprendizajes
 
