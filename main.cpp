@@ -5,6 +5,7 @@
 #include <cstring>
 #include <iomanip>
 #include <fstream>
+#include "cowfs_metadata.hpp"
 
 // Funcion para mostrar el encabezado de una seccion
 void mostrarSeccion(const std::string& titulo) {
@@ -348,50 +349,15 @@ int main() {
         std::cout << "\nESTADO FINAL DESPUES DE ROLLBACK Y NUEVA VERSION:" << std::endl;
         mostrarContenido(fs, nombre_archivo);
         mostrarVersionesDetalladas(fs, nombre_archivo);
-        
-        //======================================================================
-        // DEMOSTRACIÓN 3: LIBERACIÓN DE MEMORIA CON GARBAGE COLLECTOR
-        //======================================================================
-        mostrarSeccion("DEMOSTRACION 3: LIBERACION DE MEMORIA CON GARBAGE COLLECTOR");
-        
-        std::cout << "En esta demostracion, ejecutaremos el recolector de basura para" << std::endl;
-        std::cout << "liberar bloques que ya no son referenciados por ninguna version." << std::endl;
-        
-        // Mostrar uso de memoria antes
-        std::cout << "\nUSO DE MEMORIA ANTES DE GARBAGE COLLECTION:" << std::endl;
-        mostrarUsoMemoria(fs);
-        
-        // Ejecutar garbage collector
-        std::cout << "\nEJECUTANDO GARBAGE COLLECTOR..." << std::endl;
-        fs.garbage_collect();
-        
-        // Mostrar uso de memoria después
-        std::cout << "\nUSO DE MEMORIA DESPUES DE GARBAGE COLLECTION:" << std::endl;
-        mostrarUsoMemoria(fs);
-        
-        //======================================================================
-        // RESUMEN FINAL 
-        //======================================================================
-        mostrarSeccion("RESUMEN FINAL DEL SISTEMA DE ARCHIVOS COW");
-        
-        // Listar todos los archivos
-        mostrarArchivos(fs);
-        
-        // Mostrar metadatos finales de todas las versiones
-        std::cout << "\nESTADO FINAL DE TODOS LOS ARCHIVOS:" << std::endl;
-        std::vector<std::string> todos_archivos;
-        fs.list_files(todos_archivos);
-        
-        for (const auto& archivo : todos_archivos) {
-            mostrarMetadatosArchivo(fs, archivo);
-            mostrarContenido(fs, archivo);
-            mostrarVersionesDetalladas(fs, archivo);
+
+        // Guardar metadatos después de las operaciones
+        std::cout << "\nGuardando metadatos del sistema..." << std::endl;
+        if (cowfs::MetadataManager::save_and_print_metadata(fs, "version_final")) {
+            std::cout << "Metadatos guardados exitosamente" << std::endl;
+        } else {
+            std::cerr << "Error al guardar los metadatos" << std::endl;
         }
-        
-        // Mostrar estadísticas finales
-        std::cout << "\nESTADISTICAS FINALES DEL SISTEMA:" << std::endl;
-        mostrarUsoMemoria(fs);
-        
+
         std::cout << "\nDemostracion del sistema COW completada con exito." << std::endl;
         
     } catch (const std::exception& e) {

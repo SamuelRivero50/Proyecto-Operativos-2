@@ -693,8 +693,6 @@ size_t COWFileSystem::get_version_count(fd_t fd) const {
 }
 
 bool COWFileSystem::revert_to_version(fd_t fd, size_t version) {
-    // This is a simplified version. In a real implementation, you would need to
-    // maintain a version history and implement proper version tracking.
     return false;
 }
 
