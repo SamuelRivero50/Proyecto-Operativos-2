@@ -145,9 +145,12 @@ fd_t COWFileSystem::create(const std::string& filename) {
 }
 
 fd_t COWFileSystem::open(const std::string& filename, FileMode mode) {
+    // Mostrar informacion de depuracion para ayudar a diagnosticar
+    std::cout << "Attempting to open file '" << filename << "'" << std::endl;
+    
     Inode* inode = find_inode(filename);
     if (!inode) {
-        std::cerr << "File not found in open" << std::endl;
+        std::cerr << "File not found: " << filename << std::endl;
         return -1;
     }
 
@@ -162,9 +165,11 @@ fd_t COWFileSystem::open(const std::string& filename, FileMode mode) {
     file_descriptors[fd].mode = mode;
     file_descriptors[fd].is_valid = true;
 
-    // For write mode, position at the end of file for appending
+    // Para modo lectura, siempre empezamos al principio
+    // Para modo escritura, podriamos empezar al final o al principio segun necesidades
+    // Por ahora, para mantener compatibilidad, mantenemos escritura al final
     if (mode == FileMode::WRITE) {
-        file_descriptors[fd].current_position = inode->size;
+        file_descriptors[fd].current_position = 0; // Cambiado a 0 para facilitar la escritura desde el inicio
     } else {
         file_descriptors[fd].current_position = 0;
     }
@@ -180,30 +185,96 @@ fd_t COWFileSystem::open(const std::string& filename, FileMode mode) {
 ssize_t COWFileSystem::read(fd_t fd, void* buffer, size_t size) {
     if (fd < 0 || fd >= static_cast<fd_t>(file_descriptors.size()) || 
         !file_descriptors[fd].is_valid) {
+        std::cerr << "Invalid file descriptor in read" << std::endl;
         return -1;
     }
 
     auto& fd_entry = file_descriptors[fd];
-    if (fd_entry.mode != FileMode::READ) {
+    if (!fd_entry.inode) {
+        std::cerr << "No inode associated with file descriptor in read" << std::endl;
         return -1;
     }
 
+    // Verificamos si el archivo esta vacio SOLO por su tamano, no por first_block
+    // ya que first_block puede ser 0 (un indice valido)
+    if (fd_entry.inode->size == 0) {
+        std::cout << "read: Archivo vacio (tamano 0)" << std::endl;
+        return 0;
+    }
+    
+    // Verificar que el primer bloque sea valido (puede ser el bloque con indice 0)
+    if (fd_entry.inode->first_block >= blocks.size() || 
+        !blocks[fd_entry.inode->first_block].is_used) {
+        std::cerr << "read: Primer bloque invalido o no usado: " 
+                  << fd_entry.inode->first_block << std::endl;
+        return -1;
+    }
+
+    // Calcular cuantos bytes leer basados en la posicion actual y el tamano del archivo
+    size_t bytes_to_read = std::min(size, fd_entry.inode->size - fd_entry.current_position);
+    if (bytes_to_read == 0) {
+        std::cout << "read: Fin de archivo alcanzado (posicion actual: " 
+                  << fd_entry.current_position << ", tamano: " << fd_entry.inode->size 
+                  << ")" << std::endl;
+        return 0;  // EOF
+    }
+    
+    std::cout << "read: Leyendo " << bytes_to_read << " bytes desde la posicion " 
+              << fd_entry.current_position << std::endl;
+    std::cout << "read: Primer bloque: " << fd_entry.inode->first_block << std::endl;
+
+    // Leer datos, navegando por la cadena de bloques
     size_t bytes_read = 0;
     size_t current_block = fd_entry.inode->first_block;
     size_t block_offset = fd_entry.current_position % BLOCK_SIZE;
-
-    while (bytes_read < size && current_block != 0) {
-        size_t bytes_to_read = std::min(size - bytes_read, BLOCK_SIZE - block_offset);
+    size_t blocks_skipped = fd_entry.current_position / BLOCK_SIZE;
+    
+    // Saltar bloques hasta llegar a la posicion actual
+    for (size_t i = 0; i < blocks_skipped && current_block < blocks.size(); i++) {
+        size_t next_block = blocks[current_block].next_block;
+        // Si el siguiente bloque es 0 y no estamos en el ultimo bloque que necesitamos, 
+        // consideramos esto como el fin de la cadena
+        if (next_block >= blocks.size() && i < blocks_skipped - 1) {
+            std::cerr << "read: Fin prematuro de la cadena de bloques al navegar" << std::endl;
+            return -1;
+        }
+        current_block = next_block;
+    }
+    
+    // Verificar si alcanzamos el final de la cadena de bloques
+    if (current_block >= blocks.size() && bytes_to_read > 0) {
+        std::cerr << "read: Error al saltar bloques para alcanzar la posicion actual" << std::endl;
+        return -1;
+    }
+    
+    // Leer datos
+    while (bytes_read < bytes_to_read && current_block < blocks.size()) {
+        // Verificar que el bloque este marcado como usado
+        if (!blocks[current_block].is_used) {
+            std::cerr << "Error: Attempted to read from unused block" << std::endl;
+            return -1;
+        }
+        
+        size_t chunk_size = std::min(bytes_to_read - bytes_read, BLOCK_SIZE - block_offset);
+        
+        std::cout << "read: Leyendo " << chunk_size << " bytes del bloque " 
+                  << current_block << " con offset " << block_offset << std::endl;
+        
         std::memcpy(static_cast<uint8_t*>(buffer) + bytes_read,
                    blocks[current_block].data + block_offset,
-                   bytes_to_read);
+                   chunk_size);
         
-        bytes_read += bytes_to_read;
-        block_offset = 0;
+        bytes_read += chunk_size;
+        block_offset = 0; // Despues del primer bloque, siempre empezamos desde el inicio
         current_block = blocks[current_block].next_block;
     }
 
+    // Actualizar la posicion actual
     fd_entry.current_position += bytes_read;
+    
+    std::cout << "read: Leidos " << bytes_read << " bytes, nueva posicion: " 
+              << fd_entry.current_position << std::endl;
+              
     return bytes_read;
 }
 
@@ -221,33 +292,33 @@ bool COWFileSystem::find_delta(const void* old_data, const void* new_data,
     const uint8_t* old_bytes = static_cast<const uint8_t*>(old_data);
     const uint8_t* new_bytes = static_cast<const uint8_t*>(new_data);
     
-    // Si los datos son idénticos, no hay delta
+    // Si los datos son identicos, no hay delta
     if (old_size == new_size && std::memcmp(old_data, new_data, old_size) == 0) {
         delta_start = 0;
         delta_size = 0;
         return true;
     }
     
-    // Encontrar dónde comienzan las diferencias
+    // Encontrar donde comienzan las diferencias
     delta_start = 0;
     while (delta_start < old_size && delta_start < new_size &&
            old_bytes[delta_start] == new_bytes[delta_start]) {
         delta_start++;
     }
     
-    // Si el nuevo contenido es más corto y no hay diferencias hasta aquí
+    // Si el nuevo contenido es mas corto y no hay diferencias hasta aqui
     if (delta_start == new_size && new_size < old_size) {
         delta_size = 0;
         return true;
     }
     
-    // Si el nuevo contenido es más largo pero igual hasta el final del viejo
+    // Si el nuevo contenido es mas largo pero igual hasta el final del viejo
     if (delta_start == old_size && new_size > old_size) {
         delta_size = new_size - old_size;
         return true;
     }
     
-    // Encontrar dónde terminan las diferencias desde el final
+    // Encontrar donde terminan las diferencias desde el final
     size_t common_suffix = 0;
     while (common_suffix < (old_size - delta_start) && 
            common_suffix < (new_size - delta_start) &&
@@ -255,10 +326,10 @@ bool COWFileSystem::find_delta(const void* old_data, const void* new_data,
         common_suffix++;
     }
     
-    // Calcular el tamaño del delta
+    // Calcular el tamano del delta
     delta_size = (new_size - delta_start) - common_suffix;
     
-    // Validación final
+    // Validacion final
     if (delta_start + delta_size > new_size) {
         delta_size = new_size - delta_start;
     }
@@ -273,9 +344,13 @@ bool COWFileSystem::write_delta_blocks(const void* buffer, size_t size,
         return true;
     }
     
-    // Calcular cuántos bloques necesitamos
+    // Calcular cuantos bloques necesitamos
     size_t actual_size = std::min(size - delta_start, size);
     size_t blocks_needed = (actual_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    
+    std::cout << "write_delta_blocks: Necesitamos " << blocks_needed 
+              << " bloques para escribir " << actual_size << " bytes" << std::endl;
+    
     first_block = 0;
     size_t current_block = 0;
     size_t prev_block = 0;
@@ -283,27 +358,37 @@ bool COWFileSystem::write_delta_blocks(const void* buffer, size_t size,
     const uint8_t* data = static_cast<const uint8_t*>(buffer) + delta_start;
     size_t remaining = actual_size;
     
-    while (remaining > 0) {
+    for (size_t i = 0; i < blocks_needed; i++) {
         if (!allocate_block(current_block)) {
-            // Liberar bloques si falla
+            std::cerr << "write_delta_blocks: No se pudo asignar el bloque " << i+1 
+                      << " de " << blocks_needed << std::endl;
+            
+            // Liberar los bloques que ya asignamos si fallamos
             if (first_block != 0) {
-                size_t block = first_block;
-                while (block != 0) {
-                    size_t next = blocks[block].next_block;
-                    free_block(block);
-                    block = next;
+                size_t block_to_free = first_block;
+                while (block_to_free != 0 && block_to_free < blocks.size()) {
+                    size_t next = blocks[block_to_free].next_block;
+                    free_block(block_to_free);
+                    block_to_free = next;
                 }
             }
+            
+            first_block = 0;
             return false;
         }
         
-        if (first_block == 0) {
+        // Si es el primer bloque, guardamos su indice
+        if (i == 0) {
             first_block = current_block;
         } else {
+            // Enlazar con el bloque anterior
             blocks[prev_block].next_block = current_block;
         }
         
+        // Calcular cuantos bytes escribir en este bloque
         size_t bytes_to_write = std::min(remaining, BLOCK_SIZE);
+        
+        // Copiar los datos al bloque
         std::memcpy(blocks[current_block].data, data, bytes_to_write);
         
         // Inicializar el resto del bloque con ceros si es necesario
@@ -316,35 +401,15 @@ bool COWFileSystem::write_delta_blocks(const void* buffer, size_t size,
         prev_block = current_block;
     }
     
-    // Asegurar que el último bloque tenga next_block = 0
+    // Asegurar que el ultimo bloque tenga next_block = 0
     if (prev_block < blocks.size()) {
         blocks[prev_block].next_block = 0;
     }
     
+    std::cout << "write_delta_blocks: Escritura exitosa en " << blocks_needed 
+              << " bloques, primer bloque: " << first_block << std::endl;
+    
     return true;
-}
-
-void COWFileSystem::increment_block_refs(size_t block_index) {
-    while (block_index != 0 && block_index < blocks.size()) {
-        blocks[block_index].ref_count++;
-        block_index = blocks[block_index].next_block;
-    }
-}
-
-void COWFileSystem::decrement_block_refs(size_t block_index) {
-    while (block_index != 0 && block_index < blocks.size()) {
-        if (blocks[block_index].ref_count > 0) {
-            blocks[block_index].ref_count--;
-            if (blocks[block_index].ref_count == 0) {
-                size_t next_block = blocks[block_index].next_block;
-                free_block(block_index);
-                block_index = next_block;
-            } else {
-                break; // Si aún hay referencias, no seguir
-            }
-        }
-        block_index = blocks[block_index].next_block;
-    }
 }
 
 ssize_t COWFileSystem::write(fd_t fd, const void* buffer, size_t size) {
@@ -367,65 +432,100 @@ ssize_t COWFileSystem::write(fd_t fd, const void* buffer, size_t size) {
         return -1;
     }
     
-    // Obtener datos de la versión anterior si existe
-    std::vector<uint8_t> old_data;
-    size_t old_size = 0;
-    
-    if (fd_entry.inode->version_count > 0) {
-        const auto& last_version = fd_entry.inode->version_history.back();
-        old_size = last_version.size;
-        old_data.resize(old_size);
-        
-        size_t current_block = last_version.block_index;
-        size_t pos = 0;
-        
-        while (current_block != 0 && pos < old_size) {
-            size_t bytes_to_read = std::min(old_size - pos, BLOCK_SIZE);
-            std::memcpy(old_data.data() + pos, blocks[current_block].data, bytes_to_read);
-            pos += bytes_to_read;
-            current_block = blocks[current_block].next_block;
-        }
+    // Si el buffer esta vacio o el tamano es cero, no hacer nada
+    if (!buffer || size == 0) {
+        return 0;
     }
     
-    // Encontrar el delta
-    size_t delta_start = 0;
-    size_t delta_size = size;
+    // Obtener informacion del archivo actual
+    size_t old_size = fd_entry.inode->size;
+    size_t old_first_block = fd_entry.inode->first_block;
     
-    if (!old_data.empty()) {
-        find_delta(old_data.data(), buffer, old_size, size, delta_start, delta_size);
-    }
-    
-    // Escribir solo los bloques que contienen cambios
+    // Para almacenar la informacion de los nuevos bloques
     size_t new_first_block = 0;
-    if (delta_size > 0) {
-        if (!write_delta_blocks(buffer, delta_size, delta_start, new_first_block)) {
-            std::cerr << "Failed to write delta blocks" << std::endl;
-            return -1;
+    size_t delta_start = 0;
+    size_t delta_size = 0;
+    
+    // Determinar si es la primera version o necesitamos detectar cambios
+    bool is_first_version = (fd_entry.inode->version_count == 0);
+    
+    if (is_first_version) {
+        // Primera version, todo el contenido es nuevo
+        delta_start = 0;
+        delta_size = size;
+    } else {
+        // Leer el contenido actual para detectar cambios
+        std::vector<uint8_t> old_content(old_size);
+        
+        if (old_size > 0) {
+            // Guardar la posicion actual
+            size_t saved_position = fd_entry.current_position;
+            
+            // Posicionar al inicio del archivo
+            fd_entry.current_position = 0;
+            
+            // Leer el contenido actual
+            ssize_t bytes_read = read(fd, old_content.data(), old_size);
+            
+            // Restaurar la posicion
+            fd_entry.current_position = saved_position;
+            
+            // Verificar si la lectura tuvo exito
+            if (bytes_read != static_cast<ssize_t>(old_size)) {
+                std::cerr << "Error reading current content for delta detection" << std::endl;
+                return -1;
+            }
+            
+            // Detectar cambios entre versiones
+            if (!find_delta(old_content.data(), buffer, old_size, size, delta_start, delta_size)) {
+                std::cerr << "Error detecting delta between versions" << std::endl;
+                return -1;
+            }
+        } else {
+            // Si el archivo estaba vacio, todo es nuevo
+            delta_start = 0;
+            delta_size = size;
         }
     }
     
-    // Crear nueva versión
+    // Si no hay cambios, no crear una nueva version
+    if (delta_size == 0) {
+        std::cout << "No changes detected, not creating a new version" << std::endl;
+        
+        // Pero si actualizamos la posicion del cursor
+        fd_entry.current_position = size;
+        
+        return size;
+    }
+    
+    // Crear una nueva cadena de bloques para la nueva version
+    if (!write_delta_blocks(buffer, size, delta_start, new_first_block)) {
+        std::cerr << "Could not allocate blocks for new version" << std::endl;
+        return -1;
+    }
+    
+    // Crear informacion de la nueva version
     VersionInfo new_version;
     new_version.version_number = fd_entry.inode->version_count + 1;
-    new_version.block_index = new_first_block;
-    new_version.size = size;
     new_version.timestamp = get_current_timestamp();
+    new_version.size = size;
+    new_version.block_index = new_first_block;
     new_version.delta_start = delta_start;
     new_version.delta_size = delta_size;
-    new_version.prev_version = fd_entry.inode->version_count > 0 ? 
-                              fd_entry.inode->version_count : 0;
+    new_version.prev_version = (fd_entry.inode->version_count > 0) ? fd_entry.inode->version_count : 0;
     
-    // Incrementar referencias a bloques compartidos
-    if (fd_entry.inode->version_count > 0) {
-        increment_block_refs(fd_entry.inode->first_block);
-    }
+    // Incrementar la referencia a los nuevos bloques
+    increment_block_refs(new_first_block);
     
-    // Actualizar inode
+    // Actualizar el inodo con la nueva informacion
     fd_entry.inode->version_history.push_back(new_version);
     fd_entry.inode->first_block = new_first_block;
     fd_entry.inode->size = size;
     fd_entry.inode->version_count++;
     
+    // Actualizar la posicion del cursor
+    fd_entry.current_position = size;
+
     std::cout << "Write operation completed:"
               << "\n  bytes written: " << size
               << "\n  delta size: " << delta_size
@@ -482,33 +582,44 @@ bool COWFileSystem::allocate_block(size_t& block_index) {
     // Buscar el mejor bloque libre que se ajuste
     FreeBlockInfo* best_block = find_best_fit(1);
     
-    if (best_block) {
-        block_index = best_block->start_block;
-        
-        // Actualizar la lista de bloques libres
-        if (best_block->block_count > 1) {
-            best_block->start_block++;
-            best_block->block_count--;
-        } else {
-            if (best_block == free_blocks_list) {
-                free_blocks_list = best_block->next;
-            } else {
-                FreeBlockInfo* current = free_blocks_list;
-                while (current->next != best_block) {
-                    current = current->next;
-                }
-                current->next = best_block->next;
-            }
-            delete best_block;
-        }
-        
-        // Inicializar el bloque
-        blocks[block_index].is_used = true;
-        blocks[block_index].next_block = 0;
-        return true;
+    if (!best_block) {
+        std::cerr << "allocate_block: No hay bloques libres disponibles" << std::endl;
+        std::cerr << "Memoria total: " << disk_size << " bytes" << std::endl;
+        std::cerr << "Memoria usada: " << get_total_memory_usage() << " bytes" << std::endl;
+        return false;
     }
     
-    return false;
+    // Si llegamos aqui, encontramos un bloque libre
+    std::cout << "allocate_block: Asignando bloque " << best_block->start_block << std::endl;
+    
+    block_index = best_block->start_block;
+    
+    // Actualizar la lista de bloques libres
+    if (best_block->block_count > 1) {
+        best_block->start_block++;
+        best_block->block_count--;
+    } else {
+        // Este es el ultimo bloque de este grupo libre
+        if (best_block == free_blocks_list) {
+            free_blocks_list = best_block->next;
+        } else {
+            FreeBlockInfo* current = free_blocks_list;
+            while (current != nullptr && current->next != best_block) {
+                current = current->next;
+            }
+            if (current != nullptr) {
+                current->next = best_block->next;
+            }
+        }
+        delete best_block;
+    }
+    
+    // Inicializar el bloque
+    blocks[block_index].is_used = true;
+    blocks[block_index].next_block = 0;
+    blocks[block_index].ref_count = 0; // Se incrementara en increment_block_refs
+    
+    return true;
 }
 
 void COWFileSystem::free_block(size_t block_index) {
@@ -531,12 +642,45 @@ bool COWFileSystem::copy_block(size_t source_block, size_t& dest_block) {
     return true;
 }
 
+void COWFileSystem::increment_block_refs(size_t block_index) {
+    while (block_index != 0 && block_index < blocks.size()) {
+        blocks[block_index].ref_count++;
+        block_index = blocks[block_index].next_block;
+    }
+}
+
+void COWFileSystem::decrement_block_refs(size_t block_index) {
+    while (block_index != 0 && block_index < blocks.size()) {
+        if (blocks[block_index].ref_count > 0) {
+            blocks[block_index].ref_count--;
+            if (blocks[block_index].ref_count == 0) {
+                size_t next_block = blocks[block_index].next_block;
+                free_block(block_index);
+                block_index = next_block;
+            } else {
+                break; // Si aun hay referencias, no seguir
+            }
+        }
+        block_index = blocks[block_index].next_block;
+    }
+}
+
 // Version management implementation
 std::vector<VersionInfo> COWFileSystem::get_version_history(fd_t fd) const {
     if (fd < 0 || fd >= static_cast<fd_t>(file_descriptors.size()) || 
         !file_descriptors[fd].is_valid) {
+        std::cerr << "get_version_history: Invalid file descriptor: " << fd << std::endl;
         return std::vector<VersionInfo>();
     }
+    
+    if (!file_descriptors[fd].inode) {
+        std::cerr << "get_version_history: No inode associated with file descriptor: " << fd << std::endl;
+        return std::vector<VersionInfo>();
+    }
+    
+    std::cout << "Retrieved version history for fd " << fd << ": " 
+              << file_descriptors[fd].inode->version_history.size() << " versions" << std::endl;
+    
     return file_descriptors[fd].inode->version_history;
 }
 
@@ -555,57 +699,77 @@ bool COWFileSystem::revert_to_version(fd_t fd, size_t version) {
 }
 
 bool COWFileSystem::rollback_to_version(fd_t fd, size_t version_number) {
-    // Verificar que el descriptor de archivo sea válido
+    std::cout << "Attempting rollback to version " << version_number << " for fd " << fd << std::endl;
+    
+    // Verificar que el descriptor de archivo sea valido
     if (fd < 0 || fd >= static_cast<fd_t>(file_descriptors.size()) || 
         !file_descriptors[fd].is_valid) {
-        std::cerr << "Error: Descriptor de archivo inválido" << std::endl;
+        std::cerr << "Error: Invalid file descriptor for rollback" << std::endl;
         return false;
     }
-
+    
     auto& fd_entry = file_descriptors[fd];
     if (!fd_entry.inode) {
-        std::cerr << "Error: No hay inodo asociado al descriptor" << std::endl;
+        std::cerr << "Error: No inode associated with file descriptor for rollback" << std::endl;
         return false;
     }
 
-    // Verificar que la versión solicitada exista
+    // Verificar que la version solicitada exista
     if (version_number == 0 || version_number > fd_entry.inode->version_count) {
-        std::cerr << "Error: Versión " << version_number << " no existe" << std::endl;
+        std::cerr << "Error: Version " << version_number << " does not exist (max: " << fd_entry.inode->version_count << ")" << std::endl;
         return false;
     }
 
-    // Encontrar la versión solicitada en el historial
-    auto it = std::find_if(fd_entry.inode->version_history.begin(),
-                          fd_entry.inode->version_history.end(),
-                          [version_number](const VersionInfo& v) {
-                              return v.version_number == version_number;
-                          });
-
-    if (it == fd_entry.inode->version_history.end()) {
-        std::cerr << "Error: No se encontró la versión " << version_number << std::endl;
+    // Encontrar la version solicitada en el historial
+    const VersionInfo* target_version = nullptr;
+    for (const auto& v : fd_entry.inode->version_history) {
+        if (v.version_number == version_number) {
+            target_version = &v;
+            break;
+        }
+    }
+    
+    if (!target_version) {
+        std::cerr << "Error: Could not find version " << version_number << " in history" << std::endl;
         return false;
     }
+    
+    std::cout << "Rolling back to version " << target_version->version_number 
+              << " with block index " << target_version->block_index 
+              << " and size " << target_version->size << std::endl;
 
-    // Crear una nueva versión basada en la versión seleccionada
-    VersionInfo new_version;
-    new_version.version_number = fd_entry.inode->version_count + 1;
-    new_version.block_index = it->block_index;
-    new_version.size = it->size;
-    new_version.timestamp = get_current_timestamp();
-    new_version.delta_start = 0;
-    new_version.delta_size = it->size;
-    new_version.prev_version = version_number;
-
-    // Incrementar las referencias a los bloques de la versión seleccionada
-    increment_block_refs(it->block_index);
-
-    // Actualizar el inodo con la nueva versión
-    fd_entry.inode->version_history.push_back(new_version);
-    fd_entry.inode->first_block = it->block_index;
-    fd_entry.inode->size = it->size;
-    fd_entry.inode->version_count++;
-
-    std::cout << "Rollback exitoso a la versión " << version_number << std::endl;
+    // Guardar las versiones que vamos a mantener (hasta la version solicitada)
+    std::vector<VersionInfo> kept_versions;
+    for (const auto& v : fd_entry.inode->version_history) {
+        if (v.version_number <= version_number) {
+            kept_versions.push_back(v);
+        } else {
+            // Decrementar referencias para versiones que seran eliminadas
+            if (v.block_index < blocks.size()) {
+                std::cout << "Decrementing references for blocks of version " << v.version_number << std::endl;
+                decrement_block_refs(v.block_index);
+            }
+        }
+    }
+    
+    // Actualizar el inodo con la informacion de la version objetivo
+    fd_entry.inode->version_history = kept_versions;
+    fd_entry.inode->first_block = target_version->block_index;
+    fd_entry.inode->size = target_version->size;
+    fd_entry.inode->version_count = version_number;  // Actualizamos el contador de versiones
+    
+    // Actualizar la posicion actual en el descriptor de archivo
+    // Para escritura, lo colocamos al final del archivo
+    // Para lectura, lo dejamos como esta o lo reseteamos segun politica
+    if (fd_entry.mode == FileMode::WRITE) {
+        fd_entry.current_position = target_version->size;
+    } else {
+        fd_entry.current_position = 0; // Reset para lectura
+    }
+    
+    std::cout << "Rollback completed successfully. New version count: " 
+              << fd_entry.inode->version_count << std::endl;
+    
     return true;
 }
 
