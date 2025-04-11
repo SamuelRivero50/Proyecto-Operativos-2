@@ -58,7 +58,7 @@ Durante el desarrollo del proyecto se identificaron las siguientes limitaciones:
 2. **Complejidad de Implementación**: La gestión de referencias y detección de deltas aumenta la complejidad del código.
 3. **Escalabilidad**: El sistema está diseñado para un número limitado de archivos y un tamaño máximo de disco.
 4. **Concurrencia**: No se han implementado mecanismos avanzados para escrituras concurrentes.
-5. **Bloques**: El programa esta diseñado para archivos unicamente de 4096 bits, por lo que si hay un archivo de más bits se dificulta su versionado.
+5. **Bloques**: El programa esta diseñado para archivos unicamente de 4096 bytes, por lo que si hay un archivo de más bytes se dificulta su versionado.
 
 
 ## Conclusiones
