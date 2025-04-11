@@ -17,6 +17,10 @@ La biblioteca COWFS (Copy-on-Write File System) implementa un sistema de archivo
 ### Constantes Principales
 
 - `BLOCK_SIZE`: 4096 bytes (tamaño de cada bloque de datos)
+- `MAX_FILENAM
+### Constantes Principales
+
+- `BLOCK_SIZE`: 4096 bytes (tamaño de cada bloque de datos)
 - `MAX_FILENAME_LENGTH`: 255 caracteres (longitud máxima de nombre de archivo)
 - `MAX_FILES`: 1024 (número máximo de archivos en el sistema)
 
@@ -295,7 +299,7 @@ El proceso de rollback a una versión anterior implica:
 
 ### Recolección de Basura
 
-El algoritmo de recolección de basura:
+El algoritmo de garbage collector:
 
 1. Identifica todos los bloques actualmente en uso
 2. Marca como libres los bloques con contador de referencias igual a cero
@@ -342,7 +346,7 @@ int main() {
 ```
 
 ## Consideraciones de Rendimiento
-
+ 
 - El sistema está optimizado para minimizar el uso de almacenamiento mediante la detección de deltas entre versiones.
 - La recolección de basura debe ejecutarse periódicamente para liberar bloques no utilizados.
 - Las operaciones de escritura son más costosas que las de lectura debido a la creación de nuevas versiones.
@@ -352,3 +356,4 @@ int main() {
 - Tamaño máximo de archivos limitado por el tamaño total del disco.
 - Número máximo de archivos definido por la constante MAX_FILES (1024).
 - No se recomienda para sistemas con alta concurrencia de escritura.
+- No se recomienda para versiones de archivos mas de 4096 bytes
