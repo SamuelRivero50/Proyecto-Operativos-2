@@ -1,6 +1,6 @@
 # Documentación de la API y Uso de la Biblioteca COWFS
 
-Integrantes:
+**Integrantes**:
 
 - Samuel Enrique Rivero Urribarrí
 - Paulina Velasquez Londoño
