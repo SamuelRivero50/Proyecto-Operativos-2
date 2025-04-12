@@ -5,9 +5,9 @@ Integrantes:
 - Paulina Velasquez Londoño
 - Samuel Henao Castrillón
 
-## Resumen Ejecutivo
+## Resumen
 
-Este proyecto ha logrado desarrollar con éxito una biblioteca que implementa un sistema de archivos con mecanismo Copy-on-Write (COW) para la gestión eficiente de versiones de archivos. La biblioteca COWFS proporciona una alternativa a los sistemas de escritura tradicionales, permitiendo mantener un historial completo de versiones de cada archivo mientras optimiza el uso de memoria mediante técnicas avanzadas de gestión de almacenamiento.
+Este proyecto ha logrado desarrollar una biblioteca que implementa un sistema de archivos con mecanismo Copy-on-Write (COW) para la gestión eficiente de versiones de archivos. La biblioteca COWFS proporciona una alternativa a los sistemas de escritura tradicionales, permitiendo mantener un historial completo de versiones de cada archivo mientras optimiza el uso de memoria mediante técnicas avanzadas de gestión de almacenamiento.
 
 ## Objetivos del Proyecto
 
