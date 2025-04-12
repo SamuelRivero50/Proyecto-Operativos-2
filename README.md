@@ -2,9 +2,9 @@
 
 Integrantes:
 
-Samuel Enrique Rivero Urribarrí
-Paulina Velasquez Londoño
-Samuel Henao Castrillón
+- Samuel Enrique Rivero Urribarrí
+- Paulina Velasquez Londoño
+- Samuel Henao Castrillón
 
 ## Introducción
 
