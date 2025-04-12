@@ -362,4 +362,4 @@ int main() {
 - Tamaño máximo de archivos limitado por el tamaño total del disco.
 - Número máximo de archivos definido por la constante MAX_FILES (1024).
 - No se recomienda para sistemas con alta concurrencia de escritura.
-- No se recomienda para versiones de archivos mas de 4096 bytes
+- No se recomienda para versiones de archivos de mas de 4096 bytes
