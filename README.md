@@ -1,5 +1,11 @@
 # Documentación de la API y Uso de la Biblioteca COWFS
 
+Integrantes:
+
+Samuel Enrique Rivero Urribarrí
+Paulina Velasquez Londoño
+Samuel Henao Castrillón
+
 ## Introducción
 
 La biblioteca COWFS (Copy-on-Write File System) implementa un sistema de archivos que utiliza el mecanismo de Copy-on-Write para gestionar las escrituras y el versionado de archivos. Este sistema garantiza la integridad de los datos y permite acceder al historial de versiones de cada archivo.
